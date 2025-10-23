@@ -13,6 +13,7 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <dirent.h>
 
 // The game state can be used to detect what happens on the playfield
 #define GAMEOVER 0
@@ -25,6 +26,7 @@
 typedef struct
 {
     bool occupied;
+    uint16_t color;
 } tile;
 
 typedef struct
@@ -87,6 +89,9 @@ struct fb_fix_screeninfo {
       __u16 reserved[2];              /* Reserved for future compatibility */
 };
 
+struct fb_fix_screeninfo fix_info;
+
+
 // System kolorów dla tiles
 #define MAX_COLORS 8
 static uint16_t color_palette[MAX_COLORS] = {
@@ -100,9 +105,6 @@ static uint16_t color_palette[MAX_COLORS] = {
     0x8410  // Szary
 };
 
-//zmienne aktywnego klawisza
-static uint16_t active_tile_color = 0;
-static bool active_tile_has_color = false;
 
 //Potrzebne deklaracje
 static inline bool tileOccupied(coord const target);
@@ -117,9 +119,15 @@ static uint16_t tile_colors[8][8] = {0};
 
 static int fb_fd = -1;          // Deskryptor pliku framebuffera
 static uint16_t *fb_map = NULL; // Wskaźnik do mapowanej pamięci
+static int joy_fd = -1;         // deskryptor joysticka
 
 bool initializeSenseHat()
 {
+    ///
+    ///  INICJALIZACJA WYŚWIETLACZA
+    ///
+
+
     // 1. OTWÓRZ URZĄDZENIE FRAMEBUFFER
     // "/dev/fb0" to ścieżka do pierwszego framebuffera w systemie
     fb_fd = open("/dev/fb0", O_RDWR);
@@ -130,7 +138,7 @@ bool initializeSenseHat()
     // fb_fd to "file descriptor" - numer który identyfikuje otwarte urządzenie
     
     // 2. POBRAZ INFORMACJE O FRAMEBUFFERZE  
-    struct fb_fix_screeninfo fix_info;
+    
     if (ioctl(fb_fd, FBIOGET_FSCREENINFO, &fix_info) == -1) {
         perror("Błąd odczytu informacji o framebufferze");
         close(fb_fd);
@@ -159,6 +167,50 @@ bool initializeSenseHat()
     // 6. NARYSUJ JEDEN CZERWONY PIKSEL dla testu
     // Piksel (0,0) - lewy górny róg
     fb_map[10] = 0xF800;  // Czerwony w RGB565
+
+
+    ///
+    ///  INICJALIZACJA JOYSTICKA
+    ///
+
+    // INICJALIZACJA JOYSTICKA - SPRAWDŹ 8 EVENTÓW Z WERYFIKACJĄ
+    DIR *dir = opendir("/dev/input");
+    if (dir == NULL) {
+        perror("Cannot open /dev/input");
+        return true; // Pozwól grać z klawiatury
+    }
+    
+    struct dirent *entry;
+    
+    while ((entry = readdir(dir)) != NULL) {
+        // Szukaj tylko plików event*
+        if (strncmp(entry->d_name, "event", 5) == 0) {
+            char event_path[64];
+            snprintf(event_path, sizeof(event_path), "/dev/input/%s", entry->d_name);
+            
+            joy_fd = open(event_path, O_RDONLY | O_NONBLOCK);
+            if (joy_fd != -1) {
+                char name[256] = "Unknown";
+                if (ioctl(joy_fd, EVIOCGNAME(sizeof(name)), name) != -1) {
+                    if (strstr(name, "Sense HAT Joystick") != NULL) {
+                        printf("Found Sense HAT joystick: %s at %s\n", name, event_path);
+                        closedir(dir);
+                        return true;
+                    }
+                }
+                close(joy_fd);
+                joy_fd = -1;
+            }
+        }
+    }
+    closedir(dir);
+    
+    if (joy_fd == -1) {
+        fprintf(stderr, "Could not find Sense HAT joystick\n");
+        // Nie zwracaj false - pozwól grać z klawiatury
+    }
+
+
     
     return true;
 }
@@ -183,11 +235,6 @@ void freeSenseHat()
         close(fb_fd);
         fb_fd = -1;
     }
-    
-    // Resetuj kolory
-    active_tile_has_color = false;
-    active_tile_color = 0;
-    memset(tile_colors, 0, sizeof(tile_colors));
 }
 
 // This function should return the key that corresponds to the joystick press
@@ -209,18 +256,18 @@ void renderSenseHatMatrix(bool const playfieldChanged)
     for (unsigned int y = 0; y < game.grid.y; y++) {
         for (unsigned int x = 0; x < game.grid.x; x++) {
             coord pos = {x, y};
+            tile* current_tile = &game.playfield[y][x];
             
             if (tileOccupied(pos)) {
-                // Tile jest occupied - narysuj kolor
-                if (tile_colors[y][x] == 0) {
-                    // Przypisz nowy losowy kolor jeśli jeszcze nie ma
-                    tile_colors[y][x] = color_palette[rand() % MAX_COLORS];
+                // Jeśli tile nie ma jeszcze koloru, przypisz losowy
+                if (current_tile->color == 0) {
+                    current_tile->color = color_palette[rand() % MAX_COLORS];
                 }
-                draw_pixel(x, y, tile_colors[y][x]);
+                draw_pixel(x, y, current_tile->color);
             } else {
                 // Tile jest pusty - wyczyść
-                tile_colors[y][x] = 0; // Zresetuj kolor
-                draw_pixel(x, y, 0x0000); // Czarny
+                current_tile->color = 0;
+                draw_pixel(x, y, 0x0000);
             }
         }
     }
