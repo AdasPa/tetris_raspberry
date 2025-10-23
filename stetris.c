@@ -164,9 +164,6 @@ bool initializeSenseHat()
     // 5. WYCZYŚĆ EKRAN (ustaw wszystkie piksele na czarny)
     memset(fb_map, 0, fix_info.smem_len);
     
-    // 6. NARYSUJ JEDEN CZERWONY PIKSEL dla testu
-    // Piksel (0,0) - lewy górny róg
-    fb_map[10] = 0xF800;  // Czerwony w RGB565
 
 
     ///
@@ -235,7 +232,12 @@ void freeSenseHat()
         close(fb_fd);
         fb_fd = -1;
     }
+    if (joy_fd != -1) {  // DODAJ TE LINIE
+    close(joy_fd);
+    joy_fd = -1;
+    }
 }
+
 
 // This function should return the key that corresponds to the joystick press
 // KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, with the respective direction
@@ -243,7 +245,42 @@ void freeSenseHat()
 // !!! when nothing was pressed you MUST return 0 !!!
 int readSenseHatJoystick()
 {
-    return 0;
+    if (joy_fd == -1) return 0;
+    
+    struct pollfd pfd = {
+        .fd = joy_fd,
+        .events = POLLIN,
+        .revents = 0
+    };
+    
+    int key = 0;
+    
+    if (poll(&pfd, 1, 0) > 0) {
+        if (pfd.revents & POLLIN) {
+            struct input_event ev;
+            
+            while (read(joy_fd, &ev, sizeof(ev)) == sizeof(ev)) {
+                if (ev.type == EV_KEY && ev.value == 1) { // Tylko key press
+                    switch (ev.code) {
+                        case KEY_LEFT:  key = KEY_LEFT; break;
+                        case KEY_RIGHT: key = KEY_RIGHT; break;
+                        case KEY_DOWN:  key = KEY_DOWN; break;
+                        case KEY_ENTER: key = KEY_ENTER; break;
+                    }
+                }
+                // DODAJ: Zwróć klawisz także dla przytrzymania (value == 2)
+                else if (ev.type == EV_KEY && ev.value == 2) { // Key repeat
+                    switch (ev.code) {
+                        case KEY_LEFT:  key = KEY_LEFT; break;
+                        case KEY_RIGHT: key = KEY_RIGHT; break;
+                        case KEY_DOWN:  key = KEY_DOWN; break;
+                    }
+                }
+            }
+        }
+    }
+    
+    return key;
 }
 
 // This function should render the gamefield on the LED matrix. It is called
